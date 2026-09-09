@@ -2,7 +2,7 @@
 
 import { createTripAction } from '../actions'
 import Link from 'next/link'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { DocumentScannerUpload } from '@/components/driver/DocumentScannerUpload'
 import type { ExtractedPassenger, ScanResult } from '@/lib/ai/extractDocument'
 
@@ -10,6 +10,20 @@ export default function NewDriverTripPage() {
   const [firstGuest, setFirstGuest] = useState({ name: '', nationality: '', id_number: '', contact: '', document_image_url: '' })
   const [passengers, setPassengers] = useState<{ name: string, nationality: string, id_number: string, document_image_url: string }[]>([])
   const [tripDate, setTripDate] = useState('')
+  const [tripTime, setTripTime] = useState('')
+
+  useEffect(() => {
+    const now = new Date()
+    const yyyy = now.getFullYear()
+    const mm = String(now.getMonth() + 1).padStart(2, '0')
+    const dd = String(now.getDate()).padStart(2, '0')
+    setTripDate(`${yyyy}-${mm}-${dd}`)
+
+    const hours = String(now.getHours()).padStart(2, '0')
+    const minutes = String(now.getMinutes()).padStart(2, '0')
+    setTripTime(`${hours}:${minutes}`)
+  }, [])
+
   // Feature C: track which fields were auto-filled so we can show [Auto-filled] label
   const [autoFilled, setAutoFilled] = useState<Set<string>>(new Set())
   // Scanner is always visible — it manages its own idle/scanning/done states internally
@@ -22,16 +36,25 @@ export default function NewDriverTripPage() {
     warnings: string[]
   } | null>(null)
 
-  // Calculate day of week based on date
-  const dayOfTrip = tripDate ? new Date(tripDate).toLocaleDateString('en-US', { weekday: 'long' }) : ''
+  // Calculate day of week based on date (parsed as local time to avoid UTC shift bugs)
+  let dayOfTrip = ''
+  if (tripDate) {
+    const parts = tripDate.split('-')
+    if (parts.length === 3) {
+      const localDate = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0)
+      dayOfTrip = localDate.toLocaleDateString('en-US', { weekday: 'long' })
+    }
+  }
 
-  const addPassenger = () => {
+  const addPassenger = (e?: React.MouseEvent) => {
+    e?.preventDefault()
     if (passengers.length < 49) {
       setPassengers([...passengers, { name: '', nationality: '', id_number: '', document_image_url: '' }])
     }
   }
 
-  const removeLastPassenger = () => {
+  const removeLastPassenger = (e?: React.MouseEvent) => {
+    e?.preventDefault()
     if (passengers.length > 0) {
       const newPassengers = [...passengers]
       newPassengers.pop()
@@ -78,7 +101,8 @@ export default function NewDriverTripPage() {
   }
 
   // ── Review table: confirm all → move into the form (skips form duplicates) ───
-  const confirmBatch = () => {
+  const confirmBatch = (e?: React.MouseEvent) => {
+    e?.preventDefault()
     if (!pendingBatch) return
 
     // Build the set of ID numbers already committed to the form
@@ -120,7 +144,8 @@ export default function NewDriverTripPage() {
   }
 
   // ── Cancel batch ──────────────────────────────────────────────────────────
-  const cancelBatch = () => {
+  const cancelBatch = (e?: React.MouseEvent) => {
+    e?.preventDefault()
     setPendingBatch(null)
   }
 
@@ -277,6 +302,8 @@ export default function NewDriverTripPage() {
             <input 
               type="time" 
               name="trip_time"
+              value={tripTime}
+              onChange={(e) => setTripTime(e.target.value)}
               required 
               className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
             />
@@ -412,7 +439,7 @@ export default function NewDriverTripPage() {
                               placeholder="Passport or Visa number"
                             />
                             {hasCheckDigitWarning && !isDuplicate && (
-                              <span className="text-amber-600 text-xs font-bold flex-shrink-0" title="MRZ check-digit mismatch — verify manually">⚠</span>
+                               <span className="text-amber-600 text-xs font-bold flex-shrink-0" title="MRZ check-digit mismatch — verify manually">⚠</span>
                             )}
                           </div>
                         </td>
@@ -481,7 +508,7 @@ export default function NewDriverTripPage() {
             </div>
           )}
           
-          <div className="space-y-4 max-w-4xl mx-auto pt-4">
+          <div className="space-y-4 max-w-4xl mx-auto pt-4 text-left">
             {passengers.map((p, index) => (
               <div key={index} className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
