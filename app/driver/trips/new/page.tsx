@@ -6,6 +6,8 @@ import { useState, useCallback, useEffect } from 'react'
 import { DocumentScannerUpload } from '@/components/driver/DocumentScannerUpload'
 import type { ExtractedPassenger, ScanResult } from '@/lib/ai/extractDocument'
 
+const inputClass = "w-full bg-background border border-border rounded-xl px-4 py-3.5 md:py-4 text-base md:text-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary transition-all text-right md:text-left shadow-sm"
+
 export default function NewDriverTripPage() {
   const [firstGuest, setFirstGuest] = useState({ name: '', nationality: '', id_number: '', contact: '', document_image_url: '' })
   const [passengers, setPassengers] = useState<{ name: string, nationality: string, id_number: string, document_image_url: string }[]>([])
@@ -166,7 +168,7 @@ export default function NewDriverTripPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 space-y-8 max-w-6xl mx-auto">
+    <div className="w-full px-4 md:px-12 lg:px-24 xl:px-40 py-8 space-y-12 max-w-[1800px] mx-auto">
       {savedTrip && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -176,16 +178,16 @@ export default function NewDriverTripPage() {
               </svg>
             </div>
             <div>
-              <p className="font-bold text-emerald-800 text-base">{savedTrip.message}</p>
-              <p className="text-emerald-600 text-sm">Your trip document has been saved to Trips History.</p>
+              <p className="font-bold text-emerald-800 text-lg">{savedTrip.message}</p>
+              <p className="text-emerald-600 text-base">Your trip document has been saved to Trips History.</p>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            <a href="/driver/trips" className="px-4 py-2 bg-white border border-emerald-300 text-emerald-700 rounded-lg text-sm font-semibold hover:bg-emerald-50 transition-colors">
+            <a href="/driver/trips" className="px-6 py-3 bg-white border border-emerald-300 text-emerald-700 rounded-lg text-base font-semibold hover:bg-emerald-50 transition-colors">
               View in History →
             </a>
-            <a href={`/driver/trips/${savedTrip.tripId}/print`} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition-colors flex items-center gap-1.5">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+            <a href={`/driver/trips/${savedTrip.tripId}/print`} className="px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition-colors flex items-center gap-1.5">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
               Print
             </a>
           </div>
@@ -193,17 +195,17 @@ export default function NewDriverTripPage() {
       )}
 
       {/* Form Area */}
-      <form action={handleAction} className="space-y-8">
+      <form action={handleAction} className="space-y-12">
         
         {/* Main Guest Info */}
-        <div className="flex flex-col gap-2 mb-2">
-          <h3 className="text-lg font-semibold text-text-secondary">Primary Guest Information</h3>
+        <div className="flex flex-col gap-2 mb-4">
+          <h3 className="text-xl font-bold text-text-primary border-b border-border pb-2">Primary Guest Information</h3>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="space-y-1 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="space-y-2 text-right md:text-left">
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">
               Name of the first guest
-              {autoFilled.has('first_name') && <span className="ml-1 text-xs font-normal text-text-secondary">[Auto-filled — verify]</span>}
+              {autoFilled.has('first_name') && <span className="ml-1 text-sm font-normal text-text-secondary normal-case tracking-normal">[Auto-filled — verify]</span>}
             </label>
             <input 
               type="text" 
@@ -211,13 +213,13 @@ export default function NewDriverTripPage() {
               required 
               value={firstGuest.name}
               onChange={e => { setFirstGuest({ ...firstGuest, name: e.target.value }); setAutoFilled(af => { const n = new Set(af); n.delete('first_name'); return n }) }}
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
-          <div className="space-y-1 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">
+          <div className="space-y-2 text-right md:text-left">
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">
               Nationality of the first guest
-              {autoFilled.has('first_nationality') && <span className="ml-1 text-xs font-normal text-text-secondary">[Auto-filled — verify]</span>}
+              {autoFilled.has('first_nationality') && <span className="ml-1 text-sm font-normal text-text-secondary normal-case tracking-normal">[Auto-filled — verify]</span>}
             </label>
             <input 
               type="text" 
@@ -225,100 +227,100 @@ export default function NewDriverTripPage() {
               required 
               value={firstGuest.nationality}
               onChange={e => { setFirstGuest({ ...firstGuest, nationality: e.target.value }); setAutoFilled(af => { const n = new Set(af); n.delete('first_nationality'); return n }) }}
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
-          <div className="space-y-1 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">
+          <div className="space-y-2 text-right md:text-left">
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">
               ID number of guest
-              {autoFilled.has('first_id') && <span className="ml-1 text-xs font-normal text-text-secondary">[Auto-filled — verify]</span>}
+              {autoFilled.has('first_id') && <span className="ml-1 text-sm font-normal text-text-secondary normal-case tracking-normal">[Auto-filled — verify]</span>}
             </label>
             <input 
               type="text" 
               name="first_guest_id"
               value={firstGuest.id_number}
               onChange={e => { setFirstGuest({ ...firstGuest, id_number: e.target.value }); setAutoFilled(af => { const n = new Set(af); n.delete('first_id'); return n }) }}
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
         </div>
 
         {/* Contact & Location Info */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Contact number for first guest</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Contact number for first guest</label>
             <input 
               type="text" 
               name="first_guest_contact"
               value={firstGuest.contact}
               onChange={e => setFirstGuest({ ...firstGuest, contact: e.target.value })}
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Coming from</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Coming from</label>
             <input 
               type="text" 
               name="pickup_location"
               required 
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Arrival to</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Arrival to</label>
             <input 
               type="text" 
               name="dropoff_location"
               required 
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
         </div>
 
         {/* Date & Time Info */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Date</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Date</label>
             <input 
               type="date" 
               name="trip_date"
               value={tripDate}
               onChange={(e) => setTripDate(e.target.value)}
               required 
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Day of the trip</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Day of the trip</label>
             <input 
               type="text" 
               value={dayOfTrip}
               readOnly
-              className="w-full bg-surface border border-border rounded-md px-3 py-2 text-text-secondary outline-none text-right md:text-left"
+              className="w-full bg-surface border border-border rounded-xl px-4 py-3.5 md:py-4 text-base md:text-lg text-text-secondary outline-none text-right md:text-left shadow-sm cursor-not-allowed"
             />
           </div>
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Arrival time</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Arrival time</label>
             <input 
               type="time" 
               name="trip_time"
               value={tripTime}
               onChange={(e) => setTripTime(e.target.value)}
               required 
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
         </div>
 
         {/* Duration */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div className="space-y-2 text-right md:text-left">
-            <label className="text-sm font-medium text-text-secondary block">Trip duration</label>
+            <label className="text-base font-semibold text-text-secondary block uppercase tracking-wide">Trip duration</label>
             <input 
               type="text" 
               name="trip_duration"
               placeholder="e.g. 2 hours"
-              className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary text-right md:text-left"
+              className={inputClass}
             />
           </div>
           <div className="col-span-2 hidden md:block"></div>
@@ -327,30 +329,30 @@ export default function NewDriverTripPage() {
 
 
         {/* Passengers Data Section */}
-        <div className="pt-16 pb-8 text-center space-y-6">
-          <h3 className="text-lg font-semibold text-text-secondary">
-            Passengers data (up to 50 passengers can be added)
+        <div className="pt-16 pb-8 text-center space-y-8">
+          <h3 className="text-xl font-bold text-text-primary border-b border-border pb-2 text-left">
+            Passengers data <span className="text-base font-normal text-text-secondary">(up to 50 passengers can be added)</span>
           </h3>
           
-          <div className="max-w-4xl mx-auto mb-8">
+          <div className="max-w-5xl mx-auto mb-10">
             <DocumentScannerUpload onBatchScanSuccess={handleBatchScanSuccess} />
           </div>
 
           {/* ── Review-before-save table ────────────────────────────────────── */}
           {pendingBatch && pendingBatch.passengers.length > 0 && (
-            <div className="max-w-4xl mx-auto text-left bg-surface border border-border rounded-lg p-4 space-y-4">
+            <div className="max-w-5xl mx-auto text-left bg-surface border border-border rounded-xl p-6 space-y-6 shadow-sm">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-bold text-text-primary">
+                <h4 className="text-base font-bold text-text-primary">
                   Review Extracted Passengers ({pendingBatch.passengers.length})
                 </h4>
-                <span className="text-xs text-text-secondary">
+                <span className="text-sm text-text-secondary">
                   Edit any field before confirming — nothing is saved until you click Confirm All
                 </span>
               </div>
 
               {/* Warnings */}
               {pendingBatch.warnings.length > 0 && (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 space-y-1">
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 space-y-1">
                   {pendingBatch.warnings.map((w, i) => (
                     <p key={i}>⚠ {w}</p>
                   ))}
@@ -358,131 +360,133 @@ export default function NewDriverTripPage() {
               )}
 
               {/* Editable table */}
-              <table className="w-full text-sm border-collapse">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left py-2 px-2 text-xs font-semibold text-text-secondary w-8">#</th>
-                    <th className="text-left py-2 px-2 text-xs font-semibold text-text-secondary">Name</th>
-                    <th className="text-left py-2 px-2 text-xs font-semibold text-text-secondary">Nationality</th>
-                    <th className="text-left py-2 px-2 text-xs font-semibold text-text-secondary">ID / Visa Number</th>
-                    <th className="py-2 px-2 w-8"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingBatch.passengers.map((p, idx) => {
-                    const hasCheckDigitWarning = pendingBatch.warnings.some(
-                      w => p.passport_number && w.includes(p.passport_number)
-                    )
+              <div className="overflow-x-auto">
+                <table className="w-full text-base border-collapse">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-3 px-3 text-sm font-semibold text-text-secondary w-8">#</th>
+                      <th className="text-left py-3 px-3 text-sm font-semibold text-text-secondary">Name</th>
+                      <th className="text-left py-3 px-3 text-sm font-semibold text-text-secondary">Nationality</th>
+                      <th className="text-left py-3 px-3 text-sm font-semibold text-text-secondary">ID / Visa Number</th>
+                      <th className="py-3 px-3 w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingBatch.passengers.map((p, idx) => {
+                      const hasCheckDigitWarning = pendingBatch.warnings.some(
+                        w => p.passport_number && w.includes(p.passport_number)
+                      )
 
-                    // ── Duplicate detection ────────────────────────────────────
-                    // 1. Already committed to the form (firstGuest / passengers)
-                    const pId = (p.passport_number || p.visa_number || '').trim().toUpperCase()
-                    const committedIds = new Set<string>()
-                    if (firstGuest.id_number) committedIds.add(firstGuest.id_number.trim().toUpperCase())
-                    passengers.forEach(fp => { if (fp.id_number) committedIds.add(fp.id_number.trim().toUpperCase()) })
-                    const isDupOfForm = pId.length > 0 && committedIds.has(pId)
+                      // ── Duplicate detection ────────────────────────────────────
+                      // 1. Already committed to the form (firstGuest / passengers)
+                      const pId = (p.passport_number || p.visa_number || '').trim().toUpperCase()
+                      const committedIds = new Set<string>()
+                      if (firstGuest.id_number) committedIds.add(firstGuest.id_number.trim().toUpperCase())
+                      passengers.forEach(fp => { if (fp.id_number) committedIds.add(fp.id_number.trim().toUpperCase()) })
+                      const isDupOfForm = pId.length > 0 && committedIds.has(pId)
 
-                    // 2. Same ID already appeared earlier in this pending batch
-                    const isDupOfBatch = pId.length > 0 && pendingBatch.passengers.some(
-                      (other, otherIdx) =>
-                        otherIdx < idx &&
-                        (other.passport_number || other.visa_number || '').trim().toUpperCase() === pId
-                    )
+                      // 2. Same ID already appeared earlier in this pending batch
+                      const isDupOfBatch = pId.length > 0 && pendingBatch.passengers.some(
+                        (other, otherIdx) =>
+                          otherIdx < idx &&
+                          (other.passport_number || other.visa_number || '').trim().toUpperCase() === pId
+                      )
 
-                    const isDuplicate = isDupOfForm || isDupOfBatch
+                      const isDuplicate = isDupOfForm || isDupOfBatch
 
-                    return (
-                      <tr
-                        key={idx}
-                        className={`border-b border-border/50 ${
-                          isDuplicate        ? 'bg-amber-50/70' :
-                          hasCheckDigitWarning ? 'bg-amber-50/30' : ''
-                        }`}
-                      >
-                        <td className="py-2 px-2 text-xs text-text-secondary font-medium">{idx + 1}</td>
-                        <td className="py-1 px-1">
-                          <input
-                            type="text"
-                            value={p.full_name || ''}
-                            onChange={e => updatePendingPassenger(idx, 'full_name', e.target.value)}
-                            className={`w-full bg-background border rounded px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent ${
-                              isDuplicate ? 'border-amber-400' : 'border-border'
-                            }`}
-                            placeholder="Full name"
-                          />
-                        </td>
-                        <td className="py-1 px-1">
-                          <input
-                            type="text"
-                            value={p.nationality || ''}
-                            onChange={e => updatePendingPassenger(idx, 'nationality', e.target.value)}
-                            className="w-full bg-background border border-border rounded px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
-                            placeholder="Nationality"
-                          />
-                        </td>
-                        <td className="py-1 px-1">
-                          <div className="flex items-center gap-1">
+                      return (
+                        <tr
+                          key={idx}
+                          className={`border-b border-border/50 ${
+                            isDuplicate        ? 'bg-amber-50/70' :
+                            hasCheckDigitWarning ? 'bg-amber-50/30' : ''
+                          }`}
+                        >
+                          <td className="py-3 px-3 text-sm text-text-secondary font-medium">{idx + 1}</td>
+                          <td className="py-2 px-2">
                             <input
                               type="text"
-                              value={p.passport_number || p.visa_number || ''}
-                              onChange={e => {
-                                // If original had passport_number, update that; otherwise visa_number
-                                if (p.passport_number) {
-                                  updatePendingPassenger(idx, 'passport_number', e.target.value)
-                                } else {
-                                  updatePendingPassenger(idx, 'visa_number', e.target.value)
-                                }
-                              }}
-                              className={`w-full bg-background border rounded px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-accent ${
-                                isDuplicate || hasCheckDigitWarning ? 'border-amber-400' : 'border-border'
+                              value={p.full_name || ''}
+                              onChange={e => updatePendingPassenger(idx, 'full_name', e.target.value)}
+                              className={`w-full bg-background border rounded-lg px-3 py-2.5 text-base text-text-primary focus:outline-none focus:ring-2 focus:ring-accent ${
+                                isDuplicate ? 'border-amber-400' : 'border-border'
                               }`}
-                              placeholder="Passport or Visa number"
+                              placeholder="Full name"
                             />
-                            {hasCheckDigitWarning && !isDuplicate && (
-                               <span className="text-amber-600 text-xs font-bold flex-shrink-0" title="MRZ check-digit mismatch — verify manually">⚠</span>
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="text"
+                              value={p.nationality || ''}
+                              onChange={e => updatePendingPassenger(idx, 'nationality', e.target.value)}
+                              className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-base text-text-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                              placeholder="Nationality"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={p.passport_number || p.visa_number || ''}
+                                onChange={e => {
+                                  // If original had passport_number, update that; otherwise visa_number
+                                  if (p.passport_number) {
+                                    updatePendingPassenger(idx, 'passport_number', e.target.value)
+                                  } else {
+                                    updatePendingPassenger(idx, 'visa_number', e.target.value)
+                                  }
+                                }}
+                                className={`w-full bg-background border rounded-lg px-3 py-2.5 text-base text-text-primary focus:outline-none focus:ring-2 focus:ring-accent ${
+                                  isDuplicate || hasCheckDigitWarning ? 'border-amber-400' : 'border-border'
+                                }`}
+                                placeholder="Passport or Visa number"
+                              />
+                              {hasCheckDigitWarning && !isDuplicate && (
+                                 <span className="text-amber-600 text-sm font-bold flex-shrink-0" title="MRZ check-digit mismatch — verify manually">⚠</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            {isDuplicate ? (
+                              <span
+                                className="inline-block px-2 py-1 bg-amber-100 border border-amber-300 text-amber-700 text-xs font-bold rounded-md whitespace-nowrap"
+                                title={isDupOfForm ? 'This passenger is already in the form' : 'Same ID as another row above'}
+                              >
+                                Duplicate
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => removePendingPassenger(idx)}
+                                className="text-red-400 hover:text-red-600 p-2"
+                                title="Exclude this passenger"
+                              >
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
                             )}
-                          </div>
-                        </td>
-                        <td className="py-1 px-1 text-center">
-                          {isDuplicate ? (
-                            <span
-                              className="inline-block px-1.5 py-0.5 bg-amber-100 border border-amber-300 text-amber-700 text-[10px] font-bold rounded whitespace-nowrap"
-                              title={isDupOfForm ? 'This passenger is already in the form' : 'Same ID as another row above'}
-                            >
-                              Duplicate
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => removePendingPassenger(idx)}
-                              className="text-red-400 hover:text-red-600 p-1"
-                              title="Exclude this passenger"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
               {/* Confirm / Cancel buttons */}
-              <div className="flex items-center justify-end gap-3 pt-2">
+              <div className="flex items-center justify-end gap-4 pt-4">
                 <button
                   type="button"
                   onClick={cancelBatch}
-                  className="px-4 py-2 bg-surface border border-border text-text-secondary rounded-md text-sm font-medium hover:bg-background"
+                  className="px-6 py-2.5 bg-surface border border-border text-text-secondary rounded-lg text-base font-medium hover:bg-background transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={confirmBatch}
-                  className="px-4 py-2 bg-accent text-white rounded-md text-sm font-semibold hover:bg-accent/90"
+                  className="px-6 py-2.5 bg-accent text-white rounded-lg text-base font-bold hover:bg-accent/90 transition-colors shadow-sm"
                 >
                   {(() => {
                     // Count how many rows will actually be added (non-duplicates of committed form)
@@ -508,41 +512,41 @@ export default function NewDriverTripPage() {
             </div>
           )}
           
-          <div className="space-y-4 max-w-4xl mx-auto pt-4 text-left">
+          <div className="space-y-6 w-full mx-auto pt-6 text-left">
             {passengers.map((p, index) => (
-              <div key={index} className="flex flex-col gap-2">
+              <div key={index} className="flex flex-col gap-3 pb-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-text-secondary">Passenger {index + 2}</span>
+                  <span className="text-base font-bold text-text-secondary">Passenger {index + 2}</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1">
-                    {autoFilled.has(`p${index}_name`) && <p className="text-xs text-text-secondary">[Auto-filled — verify]</p>}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  <div className="space-y-2">
+                    {autoFilled.has(`p${index}_name`) && <p className="text-sm text-text-secondary">[Auto-filled — verify]</p>}
                     <input 
                       type="text" 
                       placeholder={`Passenger ${index + 2} Name`}
                       value={p.name}
                       onChange={(e) => updatePassenger(index, 'name', e.target.value)}
-                      className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                      className={inputClass}
                     />
                   </div>
-                  <div className="space-y-1">
-                    {autoFilled.has(`p${index}_nationality`) && <p className="text-xs text-text-secondary">[Auto-filled — verify]</p>}
+                  <div className="space-y-2">
+                    {autoFilled.has(`p${index}_nationality`) && <p className="text-sm text-text-secondary">[Auto-filled — verify]</p>}
                     <input 
                       type="text" 
                       placeholder={`Passenger ${index + 2} Nationality`}
                       value={p.nationality}
                       onChange={(e) => updatePassenger(index, 'nationality', e.target.value)}
-                      className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                      className={inputClass}
                     />
                   </div>
-                  <div className="space-y-1">
-                    {autoFilled.has(`p${index}_id`) && <p className="text-xs text-text-secondary">[Auto-filled — verify]</p>}
+                  <div className="space-y-2">
+                    {autoFilled.has(`p${index}_id`) && <p className="text-sm text-text-secondary">[Auto-filled — verify]</p>}
                     <input 
                       type="text" 
                       placeholder={`Passenger ${index + 2} ID/Visa Number`}
                       value={p.id_number}
                       onChange={(e) => updatePassenger(index, 'id_number', e.target.value)}
-                      className="w-full bg-background border border-border rounded-md px-3 py-2 text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                      className={inputClass}
                     />
                   </div>
                 </div>
@@ -550,22 +554,22 @@ export default function NewDriverTripPage() {
             ))}
           </div>
 
-          <div className="flex items-center justify-center space-x-4 pt-6">
-            <span className="text-sm text-text-secondary font-medium">
+          <div className="flex items-center justify-center space-x-6 pt-10">
+            <span className="text-base text-text-secondary font-semibold">
               Number of Passengers: {passengers.length + 1}
             </span>
             <button 
               type="button" 
               onClick={removeLastPassenger}
               disabled={passengers.length === 0}
-              className="bg-amber-400 hover:bg-amber-500 text-amber-950 px-4 py-2 rounded-md font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-950 px-6 py-3 rounded-lg font-semibold text-base transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
             >
               Remove last passenger
             </button>
             <button 
               type="button" 
               onClick={addPassenger}
-              className="bg-cyan-400 hover:bg-cyan-500 text-cyan-950 px-4 py-2 rounded-md font-medium text-sm transition-colors"
+              className="bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-cyan-900 px-6 py-3 rounded-lg font-semibold text-base transition-colors shadow-sm"
             >
               Add another passenger
             </button>
@@ -577,12 +581,12 @@ export default function NewDriverTripPage() {
         </div>
 
         {/* Form Submit Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center space-y-4 sm:space-y-0 sm:space-x-6 pt-10 border-t border-border mt-8">
+        <div className="flex flex-col sm:flex-row items-center justify-end space-y-4 sm:space-y-0 sm:space-x-6 pt-12 pb-16 border-t border-border mt-12">
           <button 
             type="submit"
             name="action"
             value="save"
-            className="w-full sm:w-auto bg-surface border-2 border-primary text-primary hover:bg-primary/10 px-8 py-3 rounded-md font-bold transition-colors shadow-sm"
+            className="w-full sm:w-auto bg-surface border-2 border-primary text-primary hover:bg-primary/10 px-10 py-4 rounded-xl font-bold text-lg transition-colors shadow-sm"
           >
             Save Data
           </button>
@@ -591,9 +595,9 @@ export default function NewDriverTripPage() {
             type="submit"
             name="action"
             value="print"
-            className="w-full sm:w-auto bg-primary hover:bg-primary/90 text-white px-8 py-3 rounded-md font-bold transition-colors shadow-sm flex items-center justify-center space-x-2"
+            className="w-full sm:w-auto bg-primary hover:bg-primary/90 text-white px-10 py-4 rounded-xl font-bold text-lg transition-colors shadow-sm flex items-center justify-center space-x-3"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
             <span>Save & Print Document</span>
           </button>
         </div>
