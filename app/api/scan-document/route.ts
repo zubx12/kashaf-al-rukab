@@ -295,6 +295,33 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // ── Invalid API key / bad credentials → 500 (server config issue) ──────
+    if (
+      err?.status === 401 ||
+      msg.includes('401') ||
+      msg.includes('UNAUTHENTICATED') ||
+      msg.includes('invalid authentication credentials')
+    ) {
+      console.error('[scan-document] CRITICAL: GEMINI_API_KEY is invalid or missing. Check Vercel env vars.')
+      return NextResponse.json(
+        { error: 'Scanner service is misconfigured. Please contact support.' },
+        { status: 500 }
+      )
+    }
+
+    // ── Gemini rate limit / quota errors → 429 ──────────────────────────────
+    if (
+      err?.status === 429 ||
+      msg.includes('429') ||
+      msg.includes('quota') ||
+      msg.includes('RESOURCE_EXHAUSTED')
+    ) {
+      return NextResponse.json(
+        { error: 'You have reached the API rate limit or quota. Please wait a moment and try again.' },
+        { status: 429 }
+      )
+    }
+
     // ── Gemini transient overload / deadline errors → 503 (safe to retry) ───
     if (
       err?.status === 503 ||

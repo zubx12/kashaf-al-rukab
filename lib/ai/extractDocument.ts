@@ -2,6 +2,7 @@
 // SINGLE point of change when swapping models.
 // Migrated from deprecated @google/generative-ai → @google/genai (Aug 2026).
 // gemini-2.5-flash-lite was retired early by Google; upgraded to gemini-3.1-flash-lite.
+// Confirmed working (Sept 2026) with this API key via diagnostic test.
 export const AI_MODEL = 'gemini-3.1-flash-lite'
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
