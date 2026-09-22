@@ -7,6 +7,7 @@ import { GoogleGenAI } from '@google/genai'
 import { createHash } from 'crypto'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient as createUntypedClient } from '@supabase/supabase-js'
 import {
   AI_MODEL,
   SYSTEM_PROMPT,
@@ -91,51 +92,80 @@ function setL1(hash: string, result: ScanResult): void {
   scanCache.set(hash, { result, expiresAt: Date.now() + CACHE_TTL_MS })
 }
 
+// ─── L2 singleton client (created once, reused for all cache operations) ──────
+// Untyped because scan_cache is not yet in the generated Database types.
+const untypedAdmin = createUntypedClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { autoRefreshToken: false, persistSession: false } },
+)
+
+// ─── L2 circuit breaker ──────────────────────────────────────────────────────
+// If L2 fails 3 times in a row (e.g. table doesn't exist), disable it for
+// 5 minutes so we don't add ~100-300ms of wasted network round-trips.
+let l2Failures = 0
+let l2DisabledUntil = 0
+const L2_MAX_FAILURES = 3
+const L2_COOLDOWN_MS = 5 * 60 * 1000  // 5 minutes
+
+function isL2Enabled(): boolean {
+  if (l2Failures < L2_MAX_FAILURES) return true
+  if (Date.now() > l2DisabledUntil) {
+    // Cooldown expired — re-enable and give it another chance
+    l2Failures = 0
+    return true
+  }
+  return false
+}
+
 /** L2: check Supabase scan_cache table. Never throws — returns null on any error. */
 async function getL2(hash: string): Promise<ScanResult | null> {
+  if (!isL2Enabled()) return null
   try {
-    // Use untyped client — scan_cache is not yet in the generated Database types.
-    const { createClient } = await import('@supabase/supabase-js')
-    const admin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { autoRefreshToken: false, persistSession: false } },
-    )
-    const { data } = await admin
+    const { data } = await untypedAdmin
       .from('scan_cache')
       .select('result')
       .eq('image_hash', hash)
       .gt('expires_at', new Date().toISOString())
       .maybeSingle()
     if (data?.result) {
-      // Promote to L1 for faster subsequent lookups
+      l2Failures = 0  // reset on success
       setL1(hash, data.result as ScanResult)
       return data.result as ScanResult
     }
-  } catch { /* L2 failure is non-fatal — proceed to Gemini */ }
+    l2Failures = 0  // query succeeded (no hit, but table exists)
+  } catch {
+    l2Failures++
+    if (l2Failures >= L2_MAX_FAILURES) {
+      l2DisabledUntil = Date.now() + L2_COOLDOWN_MS
+      console.warn('[scan-document] L2 cache disabled for 5 min after repeated failures')
+    }
+  }
   return null
 }
 
 /** L2: persist result to Supabase. Fire-and-forget — never delays the response. */
 function setL2(hash: string, result: ScanResult): void {
-  import('@supabase/supabase-js').then(({ createClient }) => {
-    const admin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { autoRefreshToken: false, persistSession: false } },
-    )
-    admin
-      .from('scan_cache')
-      .upsert({
-        image_hash: hash,
-        result: result as unknown as Record<string, unknown>,
-        created_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      }, { onConflict: 'image_hash' })
-      .then(({ error }) => {
-        if (error) console.error('[scan-document] L2 cache write error:', error.message)
-      })
-  })
+  if (!isL2Enabled()) return
+  untypedAdmin
+    .from('scan_cache')
+    .upsert({
+      image_hash: hash,
+      result: result as unknown as Record<string, unknown>,
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    }, { onConflict: 'image_hash' })
+    .then(({ error }) => {
+      if (error) {
+        l2Failures++
+        if (l2Failures >= L2_MAX_FAILURES) {
+          l2DisabledUntil = Date.now() + L2_COOLDOWN_MS
+          console.warn('[scan-document] L2 cache disabled for 5 min after repeated failures')
+        }
+      } else {
+        l2Failures = 0
+      }
+    })
 }
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
