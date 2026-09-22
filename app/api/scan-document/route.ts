@@ -22,13 +22,26 @@ const MAX_PASSENGERS = 50
 const MAX_BYTES = 5 * 1024 * 1024 // 5 MB server-side size guard
 
 // ─── Multi-key rotation ───────────────────────────────────────────────────────
-// Supports comma-separated keys in GEMINI_API_KEY env var.
+// Supports TWO formats:
+//   1. Comma-separated keys in GEMINI_API_KEY (e.g. "key1,key2,key3")
+//   2. Numbered env vars: GEMINI_API_KEY1, GEMINI_API_KEY2, ... GEMINI_API_KEY20
+// Both formats can be used together — all keys are merged and deduplicated.
 // Each free-tier key has 15 RPM / 2 TPM; N keys give N× capacity.
 // Round-robin distributes load evenly across all available keys.
-const API_KEYS = (process.env.GEMINI_API_KEY ?? '')
-  .split(',')
-  .map(k => k.trim().replace(/^"|"$/g, ''))   // strip quotes
-  .filter(Boolean)
+const API_KEYS = (() => {
+  const keys: string[] = []
+  // Format 1: comma-separated
+  const csv = (process.env.GEMINI_API_KEY ?? '').split(',').map(k => k.trim().replace(/^"|"$/g, '')).filter(Boolean)
+  keys.push(...csv)
+  // Format 2: numbered GEMINI_API_KEY1 .. GEMINI_API_KEY20
+  for (let i = 1; i <= 20; i++) {
+    const k = (process.env[`GEMINI_API_KEY${i}`] ?? '').trim()
+    if (k) keys.push(k)
+  }
+  // Deduplicate
+  return [...new Set(keys)]
+})()
+console.log(`[scan-document] Loaded ${API_KEYS.length} API key(s)`)
 let keyIndex = 0
 
 function getNextApiKey(): string {
