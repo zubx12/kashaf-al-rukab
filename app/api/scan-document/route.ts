@@ -20,28 +20,122 @@ import { looksLikeMrzPassportNumber, computeCheckDigit } from '@/lib/ai/mrzCheck
 const MAX_PASSENGERS = 50
 const MAX_BYTES = 5 * 1024 * 1024 // 5 MB server-side size guard
 
-// ─── Duplicate-scan guard ─────────────────────────────────────────────────────
-// Module-level Map survives across requests within the same warm instance
-// (works in dev + Vercel warm starts). For cross-instance persistence,
-// replace with a Redis or Supabase scan_cache table lookup.
+// ─── Multi-key rotation ───────────────────────────────────────────────────────
+// Supports comma-separated keys in GEMINI_API_KEY env var.
+// Each free-tier key has 15 RPM / 2 TPM; N keys give N× capacity.
+// Round-robin distributes load evenly across all available keys.
+const API_KEYS = (process.env.GEMINI_API_KEY ?? '')
+  .split(',')
+  .map(k => k.trim().replace(/^"|"$/g, ''))   // strip quotes
+  .filter(Boolean)
+let keyIndex = 0
+
+function getNextApiKey(): string {
+  if (API_KEYS.length === 0) throw new Error('No GEMINI_API_KEY configured')
+  const key = API_KEYS[keyIndex % API_KEYS.length]
+  keyIndex = (keyIndex + 1) % API_KEYS.length
+  return key
+}
+
+// ─── Per-key rate limiter ─────────────────────────────────────────────────────
+// Tracks recent request timestamps per key to stay under free-tier RPM limits.
+// Conservative limit: 10 RPM per key (leaves 5 RPM headroom under 15 RPM cap).
+const PER_KEY_RPM_LIMIT = 10
+const keyRequestLog = new Map<string, number[]>()
+
+function isKeyRateLimited(key: string): boolean {
+  const now = Date.now()
+  const timestamps = keyRequestLog.get(key) ?? []
+  // Remove entries older than 60 s
+  const recent = timestamps.filter(t => t > now - 60_000)
+  keyRequestLog.set(key, recent)
+  return recent.length >= PER_KEY_RPM_LIMIT
+}
+
+function recordKeyUsage(key: string): void {
+  const timestamps = keyRequestLog.get(key) ?? []
+  timestamps.push(Date.now())
+  keyRequestLog.set(key, timestamps)
+}
+
+/** Pick the next key that is not rate-limited. Returns null if ALL keys are exhausted. */
+function pickAvailableKey(): string | null {
+  for (let i = 0; i < API_KEYS.length; i++) {
+    const key = getNextApiKey()
+    if (!isKeyRateLimited(key)) return key
+  }
+  return null
+}
+
+// ─── Two-layer scan cache ─────────────────────────────────────────────────────
+// L1: in-memory Map (instant, per-instance, lost on cold start)
+// L2: Supabase scan_cache table (persistent, cross-instance, 24 h TTL)
+// Lookup order: L1 → L2 → Gemini API.  Writes go to both layers.
 type CacheEntry = { result: ScanResult; expiresAt: number }
 const scanCache = new Map<string, CacheEntry>()
-const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
+const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour (L1 only)
 
-function getCached(hash: string): ScanResult | null {
+function getL1(hash: string): ScanResult | null {
   const entry = scanCache.get(hash)
   if (!entry) return null
   if (Date.now() > entry.expiresAt) { scanCache.delete(hash); return null }
   return entry.result
 }
 
-function setCache(hash: string, result: ScanResult): void {
+function setL1(hash: string, result: ScanResult): void {
   // Bounded LRU: evict oldest when over 500 entries
   if (scanCache.size >= 500) {
     const firstKey = scanCache.keys().next().value
     if (firstKey) scanCache.delete(firstKey)
   }
   scanCache.set(hash, { result, expiresAt: Date.now() + CACHE_TTL_MS })
+}
+
+/** L2: check Supabase scan_cache table. Never throws — returns null on any error. */
+async function getL2(hash: string): Promise<ScanResult | null> {
+  try {
+    // Use untyped client — scan_cache is not yet in the generated Database types.
+    const { createClient } = await import('@supabase/supabase-js')
+    const admin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    )
+    const { data } = await admin
+      .from('scan_cache')
+      .select('result')
+      .eq('image_hash', hash)
+      .gt('expires_at', new Date().toISOString())
+      .maybeSingle()
+    if (data?.result) {
+      // Promote to L1 for faster subsequent lookups
+      setL1(hash, data.result as ScanResult)
+      return data.result as ScanResult
+    }
+  } catch { /* L2 failure is non-fatal — proceed to Gemini */ }
+  return null
+}
+
+/** L2: persist result to Supabase. Fire-and-forget — never delays the response. */
+function setL2(hash: string, result: ScanResult): void {
+  import('@supabase/supabase-js').then(({ createClient }) => {
+    const admin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    )
+    admin
+      .from('scan_cache')
+      .upsert({
+        image_hash: hash,
+        result: result as unknown as Record<string, unknown>,
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      }, { onConflict: 'image_hash' })
+      .then(({ error }) => {
+        if (error) console.error('[scan-document] L2 cache write error:', error.message)
+      })
+  })
 }
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
@@ -107,11 +201,15 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
 
-    // ── Duplicate-scan guard ─────────────────────────────────────────────────
+    // ── Two-layer cache lookup: L1 (in-memory) → L2 (Supabase) ──────────────
     const imageHash = createHash('sha256').update(buffer).digest('hex')
-    const cached = getCached(imageHash)
-    if (cached) {
-      return NextResponse.json(cached)
+    const l1Hit = getL1(imageHash)
+    if (l1Hit) {
+      return NextResponse.json(l1Hit)
+    }
+    const l2Hit = await getL2(imageHash)
+    if (l2Hit) {
+      return NextResponse.json(l2Hit)
     }
 
     const base64Image = buffer.toString('base64')
@@ -138,46 +236,98 @@ export async function POST(req: NextRequest) {
       })
 
     // ── Call Gemini 3.1 Flash-Lite via @google/genai SDK ─────────────────────
-    // Model name + config are isolated in lib/ai/extractDocument.ts.
+    // Multi-key rotation: pick a non-rate-limited key, retry with next key on
+    // transient 429/503 errors. With N free-tier keys we get N× capacity.
     // @google/generative-ai (old SDK) was deprecated Aug 2025 and does not
     // support Gemini 3.x models. Migrated to @google/genai (v2.17.1+).
-    // New SDK uses a flat ai.models.generateContent() call; systemInstruction
-    // and generation params live in the `config` object alongside the model.
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
+    //
+    // TIMING BUDGET (prevents Vercel cold-kill):
+    //   maxDuration = 60 s.  We reserve 10 s for auth + parsing + response,
+    //   leaving a 50 s wall-clock budget for all AI attempts combined.
+    //   Each retry gets min(remaining, 20 s) — so the happy path gets the
+    //   full 20 s, and retries dynamically shrink to fit.
+    const WALL_CLOCK_BUDGET_MS = 50_000
+    const MAX_PER_ATTEMPT_MS   = 20_000
+    const MAX_AI_RETRIES = Math.min(API_KEYS.length, 3)  // try up to 3 different keys
+    const RETRY_STATUSES = new Set([429, 503])
+    const wallClockStart = Date.now()
 
-    // ── 25 s hard timeout via Promise.race ───────────────────────────────────
-    // The @google/genai SDK (v2.17.1) does not expose an AbortSignal option on
-    // generateContent, so we race the call against a rejection promise.
-    // This leaves a 5 s buffer before Vercel's 60 s serverless kill, ensuring
-    // we always return a clean JSON error rather than a cold-kill 504.
-    const AI_TIMEOUT_MS = 25_000
+    let aiResult: Awaited<ReturnType<InstanceType<typeof GoogleGenAI>['models']['generateContent']>> | null = null
+    let lastAiError: unknown = null
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(Object.assign(new Error('AI_TIMEOUT'), { isTimeout: true })),
-        AI_TIMEOUT_MS,
+    for (let attempt = 0; attempt <= MAX_AI_RETRIES; attempt++) {
+      // ── Budget check: abort if we'd exceed the serverless time limit ──
+      const elapsed = Date.now() - wallClockStart
+      const remaining = WALL_CLOCK_BUDGET_MS - elapsed
+      if (remaining < 3_000) break  // not enough time for another attempt
+
+      // Pick a non-exhausted key; fall back to round-robin if all are limited
+      const apiKey = pickAvailableKey() ?? getNextApiKey()
+
+      // Short backoff before retries only (first attempt = zero delay)
+      if (attempt > 0) {
+        const backoff = Math.min(1_000 * attempt, 3_000)  // 1 s, 2 s, 3 s (max)
+        await new Promise(r => setTimeout(r, backoff))
+        console.log(`[scan-document] Retry #${attempt} with key ...${apiKey.slice(-6)}`)
+      }
+
+      const ai = new GoogleGenAI({ apiKey })
+      recordKeyUsage(apiKey)
+
+      // Dynamic timeout: min(20 s, remaining budget − 2 s safety margin)
+      const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(Object.assign(new Error('AI_TIMEOUT'), { isTimeout: true })),
+          attemptTimeout,
+        )
       )
-    )
 
-    const aiResult = await Promise.race([
-      ai.models.generateContent({
-        model: AI_MODEL,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          ...GENERATION_CONFIG,
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { inlineData: { mimeType, data: base64Image } },
-              { text: 'Extract.' },
+      try {
+        aiResult = await Promise.race([
+          ai.models.generateContent({
+            model: AI_MODEL,
+            config: {
+              systemInstruction: SYSTEM_PROMPT,
+              ...GENERATION_CONFIG,
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType, data: base64Image } },
+                  { text: 'Extract.' },
+                ],
+              },
             ],
-          },
-        ],
-      }),
-      timeoutPromise,
-    ])
+          }),
+          timeoutPromise,
+        ])
+        break  // success — exit retry loop
+      } catch (retryErr: unknown) {
+        lastAiError = retryErr
+        const re = retryErr as { status?: number; message?: string; isTimeout?: boolean }
+        const retryMsg = re?.message ?? ''
+        const isRetryable =
+          RETRY_STATUSES.has(re?.status ?? 0) ||
+          retryMsg.includes('429') ||
+          retryMsg.includes('RESOURCE_EXHAUSTED') ||
+          retryMsg.includes('503') ||
+          retryMsg.includes('UNAVAILABLE') ||
+          retryMsg.includes('overloaded')
+
+        if (!isRetryable || attempt === MAX_AI_RETRIES) {
+          throw retryErr  // non-retryable or final attempt — bubble up to catch block
+        }
+        // retryable — continue loop with next key
+        console.warn(`[scan-document] Transient error on key ...${apiKey.slice(-6)}: ${retryMsg.slice(0, 80)}`)
+      }
+    }
+
+    if (!aiResult) {
+      // All retries exhausted without success
+      throw lastAiError ?? new Error('All API keys exhausted')
+    }
 
     // ── Parse response ────────────────────────────────────────────────────────
     let raw = (aiResult.text ?? '').trim()
@@ -277,8 +427,9 @@ export async function POST(req: NextRequest) {
       document_image_url: storagePath,
     }
 
-    // Cache successful extraction result
-    setCache(imageHash, result)
+    // Cache in both layers: L1 (instant for warm instance) + L2 (persistent)
+    setL1(imageHash, result)
+    setL2(imageHash, result)  // fire-and-forget, never delays the response
 
     return NextResponse.json(result)
 
