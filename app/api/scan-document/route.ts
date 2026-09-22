@@ -193,6 +193,9 @@ function normalisePassenger(raw: Record<string, unknown>): ExtractedPassenger {
 // ─── POST handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const t0 = Date.now()
+  const log = (step: string) => console.log(`[scan-document] ${step} — ${Date.now() - t0}ms`)
+
   try {
     // ── Auth guard ──────────────────────────────────────────────────────────
     const supabase = await createClient()
@@ -200,6 +203,7 @@ export async function POST(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+    log('AUTH')
 
     // ── Parse file ──────────────────────────────────────────────────────────
     const formData = await req.formData()
@@ -230,17 +234,21 @@ export async function POST(req: NextRequest) {
 
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
+    log('FILE_PARSED')
 
     // ── Two-layer cache lookup: L1 (in-memory) → L2 (Supabase) ──────────────
     const imageHash = createHash('sha256').update(buffer).digest('hex')
     const l1Hit = getL1(imageHash)
     if (l1Hit) {
+      log('L1_CACHE_HIT')
       return NextResponse.json(l1Hit)
     }
     const l2Hit = await getL2(imageHash)
     if (l2Hit) {
+      log('L2_CACHE_HIT')
       return NextResponse.json(l2Hit)
     }
+    log('CACHE_MISS')
 
     const base64Image = buffer.toString('base64')
     const mimeType = (
@@ -333,6 +341,7 @@ export async function POST(req: NextRequest) {
           }),
           timeoutPromise,
         ])
+        log(`AI_SUCCESS attempt=${attempt} key=...${apiKey.slice(-6)}`)
         break  // success — exit retry loop
       } catch (retryErr: unknown) {
         lastAiError = retryErr
@@ -350,6 +359,7 @@ export async function POST(req: NextRequest) {
           throw retryErr  // non-retryable or final attempt — bubble up to catch block
         }
         // retryable — continue loop with next key
+        log(`AI_RETRY attempt=${attempt} status=${re?.status ?? 'timeout'} key=...${apiKey.slice(-6)}`)
         console.warn(`[scan-document] Transient error on key ...${apiKey.slice(-6)}: ${retryMsg.slice(0, 80)}`)
       }
     }
@@ -457,9 +467,10 @@ export async function POST(req: NextRequest) {
       document_image_url: storagePath,
     }
 
-    // Cache in both layers: L1 (instant for warm instance) + L2 (persistent)
     setL1(imageHash, result)
     setL2(imageHash, result)  // fire-and-forget, never delays the response
+
+    log(`DONE passengers=${validPassengers.length}`)
 
     return NextResponse.json(result)
 
