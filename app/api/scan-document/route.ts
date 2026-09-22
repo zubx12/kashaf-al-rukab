@@ -42,43 +42,92 @@ const API_KEYS = (() => {
   return [...new Set(keys)]
 })()
 console.log(`[scan-document] Loaded ${API_KEYS.length} API key(s)`)
-let keyIndex = 0
 
-function getNextApiKey(): string {
-  if (API_KEYS.length === 0) throw new Error('No GEMINI_API_KEY configured')
-  const key = API_KEYS[keyIndex % API_KEYS.length]
-  keyIndex = (keyIndex + 1) % API_KEYS.length
-  return key
+// ─── Smart key selector ──────────────────────────────────────────────────────
+// Prevents key conflicts with 3 strategies:
+//   1. LRU selection: always picks the key used LEAST recently
+//   2. 429 cooldown: keys that got rate-limited are skipped for 60s
+//   3. Pre-recording: usage is logged BEFORE the API call so concurrent
+//      requests on the same warm instance see the key is busy
+//
+// This ensures 5 keys never step on each other even under heavy load.
+
+type KeyState = {
+  lastUsedAt: number       // when this key was last sent to Gemini
+  cooldownUntil: number    // if rate-limited, skip until this timestamp
+  requestsInWindow: number // requests in the current 60s window
+  windowStart: number      // when the current 60s window started
 }
 
-// ─── Per-key rate limiter ─────────────────────────────────────────────────────
-// Tracks recent request timestamps per key to stay under free-tier RPM limits.
-// Conservative limit: 10 RPM per key (leaves 5 RPM headroom under 15 RPM cap).
-const PER_KEY_RPM_LIMIT = 10
-const keyRequestLog = new Map<string, number[]>()
+const keyStates = new Map<string, KeyState>()
+const PER_KEY_RPM_LIMIT = 10  // conservative: 10/15 RPM (5 RPM headroom)
 
-function isKeyRateLimited(key: string): boolean {
-  const now = Date.now()
-  const timestamps = keyRequestLog.get(key) ?? []
-  // Remove entries older than 60 s
-  const recent = timestamps.filter(t => t > now - 60_000)
-  keyRequestLog.set(key, recent)
-  return recent.length >= PER_KEY_RPM_LIMIT
-}
-
-function recordKeyUsage(key: string): void {
-  const timestamps = keyRequestLog.get(key) ?? []
-  timestamps.push(Date.now())
-  keyRequestLog.set(key, timestamps)
-}
-
-/** Pick the next key that is not rate-limited. Returns null if ALL keys are exhausted. */
-function pickAvailableKey(): string | null {
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const key = getNextApiKey()
-    if (!isKeyRateLimited(key)) return key
+function getKeyState(key: string): KeyState {
+  let s = keyStates.get(key)
+  if (!s) {
+    s = { lastUsedAt: 0, cooldownUntil: 0, requestsInWindow: 0, windowStart: Date.now() }
+    keyStates.set(key, s)
   }
-  return null
+  // Reset window if 60s has passed
+  if (Date.now() - s.windowStart > 60_000) {
+    s.requestsInWindow = 0
+    s.windowStart = Date.now()
+  }
+  return s
+}
+
+/** Mark a key as rate-limited — skip it for 60s. */
+function markKeyRateLimited(key: string): void {
+  const s = getKeyState(key)
+  s.cooldownUntil = Date.now() + 60_000
+  console.warn(`[scan-document] Key ...${key.slice(-6)} rate-limited, cooldown 60s`)
+}
+
+/** Record that we're about to use this key (call BEFORE the API request). */
+function recordKeyUsage(key: string): void {
+  const s = getKeyState(key)
+  s.lastUsedAt = Date.now()
+  s.requestsInWindow++
+}
+
+/**
+ * Pick the best available key: not rate-limited, not in cooldown,
+ * and used least recently. Returns null only if ALL keys are exhausted.
+ */
+function pickBestKey(): string | null {
+  let bestKey: string | null = null
+  let bestScore = Infinity  // lower = better (oldest lastUsedAt wins)
+
+  const now = Date.now()
+  for (const key of API_KEYS) {
+    const s = getKeyState(key)
+    // Skip keys in cooldown (got 429 recently)
+    if (now < s.cooldownUntil) continue
+    // Skip keys over RPM limit
+    if (s.requestsInWindow >= PER_KEY_RPM_LIMIT) continue
+    // Pick the one used least recently
+    if (s.lastUsedAt < bestScore) {
+      bestScore = s.lastUsedAt
+      bestKey = key
+    }
+  }
+  return bestKey
+}
+
+/** Fallback: pick any key (even if rate-limited) — last resort. */
+function pickAnyKey(): string {
+  if (API_KEYS.length === 0) throw new Error('No GEMINI_API_KEY configured')
+  // Pick the key with the oldest cooldown (most likely to be available soon)
+  let bestKey = API_KEYS[0]
+  let oldest = Infinity
+  for (const key of API_KEYS) {
+    const s = getKeyState(key)
+    if (s.cooldownUntil < oldest) {
+      oldest = s.cooldownUntil
+      bestKey = key
+    }
+  }
+  return bestKey
 }
 
 // ─── Two-layer scan cache ─────────────────────────────────────────────────────
@@ -286,25 +335,18 @@ export async function POST(req: NextRequest) {
         if (error) console.error('[scan-document] Storage upload error:', error.message)
       })
 
-    // ── Call Gemini 3.1 Flash-Lite via @google/genai SDK ─────────────────────
-    // Multi-key rotation: pick a non-rate-limited key, retry with next key on
-    // transient 429/503 errors. With N free-tier keys we get N× capacity.
-    // @google/generative-ai (old SDK) was deprecated Aug 2025 and does not
-    // support Gemini 3.x models. Migrated to @google/genai (v2.17.1+).
-    //
-    // TIMING BUDGET (prevents Vercel cold-kill):
-    //   maxDuration = 60 s.  We reserve 10 s for auth + parsing + response,
-    //   leaving a 50 s wall-clock budget for all AI attempts combined.
-    //   Each retry gets min(remaining, 20 s) — so the happy path gets the
-    //   full 20 s, and retries dynamically shrink to fit.
+    // ── Call Gemini via smart key rotation ─────────────────────────────────────
+    // LRU key selection ensures keys don't conflict. On 429, the key is marked
+    // rate-limited and skipped for 60s. Retries try ALL available keys.
     const WALL_CLOCK_BUDGET_MS = 50_000
-    const MAX_PER_ATTEMPT_MS   = 20_000
-    const MAX_AI_RETRIES = Math.min(API_KEYS.length, 3)  // try up to 3 different keys
+    const MAX_PER_ATTEMPT_MS   = 15_000  // 15s per attempt (was 20s — faster fail)
+    const MAX_AI_RETRIES = Math.max(API_KEYS.length, 3)  // try every key at least once
     const RETRY_STATUSES = new Set([429, 503])
     const wallClockStart = Date.now()
 
     let aiResult: Awaited<ReturnType<InstanceType<typeof GoogleGenAI>['models']['generateContent']>> | null = null
     let lastAiError: unknown = null
+    const usedKeys = new Set<string>()  // track which keys we've tried
 
     for (let attempt = 0; attempt <= MAX_AI_RETRIES; attempt++) {
       // ── Budget check: abort if we'd exceed the serverless time limit ──
@@ -312,20 +354,21 @@ export async function POST(req: NextRequest) {
       const remaining = WALL_CLOCK_BUDGET_MS - elapsed
       if (remaining < 3_000) break  // not enough time for another attempt
 
-      // Pick a non-exhausted key; fall back to round-robin if all are limited
-      const apiKey = pickAvailableKey() ?? getNextApiKey()
+      // Pick the best available key (LRU, not rate-limited)
+      const apiKey = pickBestKey() ?? pickAnyKey()
 
       // Short backoff before retries only (first attempt = zero delay)
+      // 500ms is enough since we're switching to a DIFFERENT key
       if (attempt > 0) {
-        const backoff = Math.min(1_000 * attempt, 3_000)  // 1 s, 2 s, 3 s (max)
+        const backoff = Math.min(500 * attempt, 2_000)  // 500ms, 1s, 1.5s, 2s max
         await new Promise(r => setTimeout(r, backoff))
-        console.log(`[scan-document] Retry #${attempt} with key ...${apiKey.slice(-6)}`)
       }
 
-      const ai = new GoogleGenAI({ apiKey })
+      // Record BEFORE the call so concurrent requests see this key is busy
       recordKeyUsage(apiKey)
+      const ai = new GoogleGenAI({ apiKey })
 
-      // Dynamic timeout: min(20 s, remaining budget − 2 s safety margin)
+      // Dynamic timeout: min(15 s, remaining budget − 2 s safety margin)
       const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(
@@ -358,22 +401,27 @@ export async function POST(req: NextRequest) {
         break  // success — exit retry loop
       } catch (retryErr: unknown) {
         lastAiError = retryErr
+        usedKeys.add(apiKey)
         const re = retryErr as { status?: number; message?: string; isTimeout?: boolean }
         const retryMsg = re?.message ?? ''
-        const isRetryable =
-          RETRY_STATUSES.has(re?.status ?? 0) ||
+        const is429 =
+          re?.status === 429 ||
           retryMsg.includes('429') ||
-          retryMsg.includes('RESOURCE_EXHAUSTED') ||
+          retryMsg.includes('RESOURCE_EXHAUSTED')
+        const isRetryable =
+          is429 ||
+          RETRY_STATUSES.has(re?.status ?? 0) ||
           retryMsg.includes('503') ||
           retryMsg.includes('UNAVAILABLE') ||
           retryMsg.includes('overloaded')
 
+        // Mark key as rate-limited so other requests skip it
+        if (is429) markKeyRateLimited(apiKey)
+
         if (!isRetryable || attempt === MAX_AI_RETRIES) {
-          throw retryErr  // non-retryable or final attempt — bubble up to catch block
+          throw retryErr  // non-retryable or final attempt
         }
-        // retryable — continue loop with next key
         log(`AI_RETRY attempt=${attempt} status=${re?.status ?? 'timeout'} key=...${apiKey.slice(-6)}`)
-        console.warn(`[scan-document] Transient error on key ...${apiKey.slice(-6)}: ${retryMsg.slice(0, 80)}`)
       }
     }
 
