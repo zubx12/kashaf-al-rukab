@@ -100,8 +100,42 @@ const MAX_RETRIES = 2
 // 500 = server crash (might be transient, worth 1 retry).
 const RETRYABLE_STATUSES = new Set([500, 504])
 
+/** Upload via XMLHttpRequest (supports upload progress tracking). Same network
+ *  request as fetch() — zero overhead, just adds progress events. */
+function uploadWithProgress(
+  file: File,
+  onUploadProgress: (pct: number) => void,
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest()
+    const fd = new FormData()
+    fd.append('file', file)
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onUploadProgress(Math.round((e.loaded / e.total) * 100))
+    }
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText)
+        resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data })
+      } catch {
+        resolve({ ok: false, status: xhr.status, data: { error: 'Invalid response' } })
+      }
+    }
+
+    xhr.onerror = () => resolve({ ok: false, status: 0, data: { error: 'Network error' } })
+    xhr.ontimeout = () => resolve({ ok: false, status: 504, data: { error: 'Request timed out' } })
+    xhr.timeout = 60_000  // 60s matches server maxDuration
+
+    xhr.open('POST', '/api/scan-document')
+    xhr.send(fd)
+  })
+}
+
 async function scanWithRetry(
   resizedFile: File,
+  onUploadProgress?: (pct: number) => void,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   let lastResult: { ok: boolean; status: number; data: unknown } | null = null
 
@@ -110,26 +144,18 @@ async function scanWithRetry(
       await new Promise(r => setTimeout(r, 2000 * attempt))  // 2s, 4s
     }
 
-    try {
-      const fd = new FormData()
-      fd.append('file', resizedFile)
-      const res  = await fetch('/api/scan-document', { method: 'POST', body: fd })
-      const data = await res.json()
+    const { ok, status, data } = await uploadWithProgress(
+      resizedFile,
+      onUploadProgress ?? (() => {}),
+    )
 
-      // Success or a permanent error — return immediately
-      if (res.ok || !RETRYABLE_STATUSES.has(res.status)) {
-        return { ok: res.ok, status: res.status, data }
-      }
-
-      // Transient server error — save result and retry if attempts remain
-      lastResult = { ok: false, status: res.status, data }
-    } catch (err) {
-      lastResult = {
-        ok: false,
-        status: 0,
-        data: { error: err instanceof Error ? err.message : 'Network error' },
-      }
+    // Success or a permanent error — return immediately
+    if (ok || !RETRYABLE_STATUSES.has(status)) {
+      return { ok, status, data }
     }
+
+    // Transient server error — save result and retry if attempts remain
+    lastResult = { ok: false, status, data }
   }
 
   return lastResult ?? { ok: false, status: 0, data: { error: 'Network error' } }
@@ -192,6 +218,8 @@ type FileSlot = {
   file:            File        // kept so per-slot retry can re-upload the same file
   resizedFile:     File | null // pre-resized version (may be null if resize not done yet)
   thumbUrl:        string | null
+  progress:        number      // 0-100 real-time progress
+  progressLabel:   string      // e.g. 'Uploading…', 'AI analyzing…'
 }
 
 type StagedFile = {
@@ -249,7 +277,7 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
     if (targets.length === 0) return
 
     // Mark all as scanning before network pool starts
-    targets.forEach(t => updateSlot(t.slotId, { status: 'scanning' }))
+    targets.forEach(t => updateSlot(t.slotId, { status: 'scanning', progress: 0, progressLabel: 'Starting…' }))
 
     const allWarnings: string[] = []
     let successCount = 0
@@ -263,21 +291,62 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
       if (cachedResult) {
         const count = cachedResult.passengers?.length ?? 0
         if (cachedResult.warnings?.length) allWarnings.push(...cachedResult.warnings)
-        updateSlot(target.slotId, { status: 'done', passengersFound: count })
+        updateSlot(target.slotId, { status: 'done', passengersFound: count, progress: 100, progressLabel: 'Done' })
         onSuccessRef.current(cachedResult)
         successCount++
         return
       }
 
-      const { ok, status, data } = await scanWithRetry(uploadFile)
+      // ── Animated AI progress timer ──────────────────────────────────────
+      // Starts after upload reaches 25%. Advances smoothly from 25% → 85%
+      // using a decelerating curve over ~20s. Stops when response arrives.
+      // This is purely visual — zero impact on the actual API call.
+      let aiTimerHandle: ReturnType<typeof setInterval> | null = null
+      const startAiProgress = () => {
+        const aiStart = Date.now()
+        const AI_DURATION = 20_000  // expected max AI time
+        aiTimerHandle = setInterval(() => {
+          const elapsed = Date.now() - aiStart
+          const t = Math.min(elapsed / AI_DURATION, 1)
+          // Ease-out curve: fast start, decelerates near end
+          const eased = 1 - Math.pow(1 - t, 2.5)
+          const aiPct = Math.round(25 + eased * 60)  // 25% → 85%
+          const label = aiPct < 40 ? 'Authenticating…' : aiPct < 80 ? 'AI analyzing…' : 'Extracting data…'
+          updateSlot(target.slotId, { progress: Math.min(aiPct, 85), progressLabel: label })
+        }, 300)
+      }
+
+      const stopAiProgress = () => {
+        if (aiTimerHandle) { clearInterval(aiTimerHandle); aiTimerHandle = null }
+      }
+
+      // ── Upload with real progress (0% → 25%) ──────────────────────────
+      const { ok, status, data } = await scanWithRetry(
+        uploadFile,
+        (uploadPct) => {
+          const pct = Math.round(uploadPct * 0.25)  // 0-25% range
+          updateSlot(target.slotId, { progress: pct, progressLabel: 'Uploading…' })
+          if (uploadPct >= 100 && !aiTimerHandle) startAiProgress()
+        },
+      )
+      // If upload was instant (small file), start AI progress now
+      if (!aiTimerHandle) {
+        updateSlot(target.slotId, { progress: 25, progressLabel: 'Authenticating…' })
+        startAiProgress()
+      }
+      stopAiProgress()
+
       const json = data as Record<string, unknown>
 
       if (!ok) {
         const serverMsg = (json?.error as string) || undefined
         const errText = getErrorMessage(status, serverMsg)
-        updateSlot(target.slotId, { status: 'error', errorMsg: errText })
+        updateSlot(target.slotId, { status: 'error', errorMsg: errText, progress: 0, progressLabel: '' })
         return
       }
+
+      // ── Finalize (85% → 100%) ──────────────────────────────────────────
+      updateSlot(target.slotId, { progress: 95, progressLabel: 'Extracting data…' })
 
       const scanResult = json as ScanResult
       const count = scanResult.passengers?.length ?? 0
@@ -286,7 +355,7 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
       // Store in client cache for instant re-scan
       clientScanCache.set(fp, scanResult)
 
-      updateSlot(target.slotId, { status: 'done', passengersFound: count })
+      updateSlot(target.slotId, { status: 'done', passengersFound: count, progress: 100, progressLabel: 'Done' })
       onSuccessRef.current(scanResult)
       successCount++
     })
@@ -320,6 +389,8 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
       file:            s.file,
       resizedFile:     s.resized,        // pre-resized during staging
       thumbUrl:        s.thumbUrl,   // thumbnail URLs are transferred (not revoked)
+      progress:        0,
+      progressLabel:   '',
     }))
 
     setStaged([])
@@ -352,7 +423,7 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
     if (!slot) return
 
     processingRef.current = true
-    updateSlot(slotId, { status: 'pending', errorMsg: null })
+    updateSlot(slotId, { status: 'pending', errorMsg: null, progress: 0, progressLabel: '' })
 
     await runScans([{ slotId, file: slot.file, resizedFile: slot.resizedFile ?? undefined }], () => {
       processingRef.current = false
@@ -753,29 +824,37 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
               )}
             </div>
 
-            {/* Progress bar */}
-            {totalSlots > 1 && (
-              <div className="space-y-1">
-                <div className="w-full h-1.5 bg-border rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      progressPct === 100
-                        ? errorSlots > 0 ? 'bg-amber-400' : 'bg-green-500'
-                        : 'bg-accent'
-                    }`}
-                    style={{ width: `${progressPct}%` }}
-                  />
+            {/* Overall progress bar — shown for all scans (single or batch) */}
+            {(() => {
+              // For batch: use per-slot completion. For single: use the slot's own progress.
+              const overallPct = totalSlots === 1
+                ? (fileSlots[0]?.progress ?? 0)
+                : Math.round(fileSlots.reduce((sum, s) => sum + s.progress, 0) / totalSlots)
+              return (
+                <div className="space-y-1">
+                  <div className="w-full h-2 bg-border rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        overallPct === 100
+                          ? errorSlots > 0 ? 'bg-amber-400' : 'bg-green-500'
+                          : 'bg-accent'
+                      }`}
+                      style={{ width: `${overallPct}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-xs text-text-secondary">
+                    <span>
+                      {isScanning
+                        ? totalSlots > 1
+                          ? `${Math.min(MAX_CONCURRENT, totalSlots - doneSlots)} scanning in parallel`
+                          : (fileSlots[0]?.progressLabel || 'Processing…')
+                        : `${doneSlots} complete`}
+                    </span>
+                    <span className="font-medium">{overallPct}%</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-xs text-text-secondary">
-                  <span>
-                    {isScanning
-                      ? `${Math.min(MAX_CONCURRENT, totalSlots - doneSlots)} scanning in parallel`
-                      : `${doneSlots} complete`}
-                  </span>
-                  <span>{doneSlots} / {totalSlots}</span>
-                </div>
-              </div>
-            )}
+              )
+            })()}
 
             {/* Per-file slot rows */}
             <div className="border border-border rounded-lg overflow-hidden divide-y divide-border/60">
@@ -820,7 +899,18 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
                       {slot.status === 'error' ? slot.fullName : slot.name}
                     </p>
                     {slot.status === 'scanning' && (
-                      <p className="text-xs text-accent/80 mt-0.5">Reading with AI...</p>
+                      <div className="mt-1 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-accent rounded-full transition-all duration-300"
+                              style={{ width: `${slot.progress}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-semibold text-accent tabular-nums w-8 text-right">{slot.progress}%</span>
+                        </div>
+                        <p className="text-[11px] text-accent/70">{slot.progressLabel || 'Processing…'}</p>
+                      </div>
                     )}
                     {slot.status === 'pending' && (
                       <p className="text-xs text-text-secondary/60 mt-0.5">Queued</p>
@@ -844,7 +934,7 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
                       </span>
                     )}
                     {slot.status === 'scanning' && (
-                      <span className="text-xs text-accent font-medium">Scanning</span>
+                      <span className="text-xs text-accent font-semibold tabular-nums">{slot.progress}%</span>
                     )}
                     {slot.status === 'pending' && (
                       <span className="text-xs text-text-secondary">Queued</span>
