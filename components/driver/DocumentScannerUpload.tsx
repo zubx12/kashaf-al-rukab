@@ -93,12 +93,12 @@ async function runWithConcurrency<T>(
 }
 
 // ─── Network retry helper ────────────────────────────────────────────────────
-const MAX_RETRIES = 3
+const MAX_RETRIES = 2
 
-// HTTP status codes that are transient and safe to retry automatically.
-// 429 = rate limited, 500 = server crash, 503/504 = Gemini overload / timeout.
-// 422 (unprocessable) and 400 (bad input) are NOT retried — they are permanent.
-const RETRYABLE_STATUSES = new Set([429, 500, 503, 504])
+// Only retry genuine timeouts (504). The server already retries all keys for
+// 429 (rate limit) and fails fast on 503 (Google overload) — no point retrying.
+// 500 = server crash (might be transient, worth 1 retry).
+const RETRYABLE_STATUSES = new Set([500, 504])
 
 async function scanWithRetry(
   resizedFile: File,
@@ -106,9 +106,8 @@ async function scanWithRetry(
   let lastResult: { ok: boolean; status: number; data: unknown } | null = null
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    // Exponential backoff before every retry: 1 s, 2 s
     if (attempt > 0) {
-      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)))
+      await new Promise(r => setTimeout(r, 1500 * attempt))  // 1.5s, 3s
     }
 
     try {
@@ -117,7 +116,7 @@ async function scanWithRetry(
       const res  = await fetch('/api/scan-document', { method: 'POST', body: fd })
       const data = await res.json()
 
-      // Success or a permanent client error — return immediately
+      // Success or a permanent error — return immediately
       if (res.ok || !RETRYABLE_STATUSES.has(res.status)) {
         return { ok: res.ok, status: res.status, data }
       }
@@ -125,7 +124,6 @@ async function scanWithRetry(
       // Transient server error — save result and retry if attempts remain
       lastResult = { ok: false, status: res.status, data }
     } catch (err) {
-      // fetch() itself threw (network offline, DNS failure, etc.)
       lastResult = {
         ok: false,
         status: 0,
@@ -134,8 +132,29 @@ async function scanWithRetry(
     }
   }
 
-  // All retries exhausted — return the last result
   return lastResult ?? { ok: false, status: 0, data: { error: 'Network error' } }
+}
+
+/** Map server error responses to specific, user-friendly messages. */
+function getErrorMessage(status: number, serverMsg?: string): string {
+  switch (status) {
+    case 429:
+      return 'All API keys are busy right now. Please wait 1 minute and retry.'
+    case 503:
+      return 'Google AI servers are overloaded. Please wait 2-3 minutes and try again.'
+    case 504:
+      return 'Scan timed out. Please try again with a smaller or clearer image.'
+    case 422:
+      return serverMsg || 'Could not read this document. Please try a clearer photo.'
+    case 413:
+      return 'Image is too large. Please use a smaller image (max 5 MB).'
+    case 500:
+      return 'Server error. Please try again in a moment.'
+    case 0:
+      return 'Network error — please check your internet connection.'
+    default:
+      return serverMsg || 'Scan failed. Please try again.'
+  }
 }
 
 function truncateName(name: string, max = 28): string {
@@ -250,11 +269,12 @@ export function DocumentScannerUpload({ onBatchScanSuccess }: Props) {
         return
       }
 
-      const { ok, data } = await scanWithRetry(uploadFile)
+      const { ok, status, data } = await scanWithRetry(uploadFile)
       const json = data as Record<string, unknown>
 
       if (!ok) {
-        const errText = (json?.error as string) || 'Scan failed — try another image.'
+        const serverMsg = (json?.error as string) || undefined
+        const errText = getErrorMessage(status, serverMsg)
         updateSlot(target.slotId, { status: 'error', errorMsg: errText })
         return
       }

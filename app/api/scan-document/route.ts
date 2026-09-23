@@ -336,39 +336,33 @@ export async function POST(req: NextRequest) {
       })
 
     // ── Call Gemini via smart key rotation ─────────────────────────────────────
-    // LRU key selection ensures keys don't conflict. On 429, the key is marked
-    // rate-limited and skipped for 60s. Retries try ALL available keys.
+    // ONLY 429 (rate limit) errors benefit from trying a different key.
+    // 503 (overloaded) means Google's servers are down — all keys hit the same
+    // servers, so retrying with another key wastes time. Fail fast instead.
     const WALL_CLOCK_BUDGET_MS = 50_000
-    const MAX_PER_ATTEMPT_MS   = 15_000  // 15s per attempt (was 20s — faster fail)
-    const MAX_AI_RETRIES = Math.max(API_KEYS.length, 3)  // try every key at least once
-    const RETRY_STATUSES = new Set([429, 503])
+    const MAX_PER_ATTEMPT_MS   = 15_000
+    const MAX_AI_RETRIES = Math.max(API_KEYS.length, 3)
     const wallClockStart = Date.now()
 
     let aiResult: Awaited<ReturnType<InstanceType<typeof GoogleGenAI>['models']['generateContent']>> | null = null
     let lastAiError: unknown = null
-    const usedKeys = new Set<string>()  // track which keys we've tried
+    const usedKeys = new Set<string>()
 
     for (let attempt = 0; attempt <= MAX_AI_RETRIES; attempt++) {
-      // ── Budget check: abort if we'd exceed the serverless time limit ──
       const elapsed = Date.now() - wallClockStart
       const remaining = WALL_CLOCK_BUDGET_MS - elapsed
-      if (remaining < 3_000) break  // not enough time for another attempt
+      if (remaining < 3_000) break
 
-      // Pick the best available key (LRU, not rate-limited)
       const apiKey = pickBestKey() ?? pickAnyKey()
 
-      // Short backoff before retries only (first attempt = zero delay)
-      // 500ms is enough since we're switching to a DIFFERENT key
       if (attempt > 0) {
-        const backoff = Math.min(500 * attempt, 2_000)  // 500ms, 1s, 1.5s, 2s max
+        const backoff = Math.min(500 * attempt, 2_000)
         await new Promise(r => setTimeout(r, backoff))
       }
 
-      // Record BEFORE the call so concurrent requests see this key is busy
       recordKeyUsage(apiKey)
       const ai = new GoogleGenAI({ apiKey })
 
-      // Dynamic timeout: min(15 s, remaining budget − 2 s safety margin)
       const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(
@@ -398,30 +392,42 @@ export async function POST(req: NextRequest) {
           timeoutPromise,
         ])
         log(`AI_SUCCESS attempt=${attempt} key=...${apiKey.slice(-6)}`)
-        break  // success — exit retry loop
+        break
       } catch (retryErr: unknown) {
         lastAiError = retryErr
         usedKeys.add(apiKey)
         const re = retryErr as { status?: number; message?: string; isTimeout?: boolean }
         const retryMsg = re?.message ?? ''
+
+        // Classify the error
         const is429 =
           re?.status === 429 ||
           retryMsg.includes('429') ||
           retryMsg.includes('RESOURCE_EXHAUSTED')
-        const isRetryable =
-          is429 ||
-          RETRY_STATUSES.has(re?.status ?? 0) ||
+        const is503 =
+          re?.status === 503 ||
           retryMsg.includes('503') ||
           retryMsg.includes('UNAVAILABLE') ||
           retryMsg.includes('overloaded')
 
-        // Mark key as rate-limited so other requests skip it
-        if (is429) markKeyRateLimited(apiKey)
-
-        if (!isRetryable || attempt === MAX_AI_RETRIES) {
-          throw retryErr  // non-retryable or final attempt
+        if (is429) {
+          // Rate limit — mark this key and try the next one
+          markKeyRateLimited(apiKey)
+          log(`AI_RETRY_429 attempt=${attempt} key=...${apiKey.slice(-6)}`)
+          continue  // try next key
         }
-        log(`AI_RETRY attempt=${attempt} status=${re?.status ?? 'timeout'} key=...${apiKey.slice(-6)}`)
+
+        if (is503) {
+          // Google servers overloaded — retrying with another key won't help
+          log(`AI_FAIL_503 attempt=${attempt} key=...${apiKey.slice(-6)} — failing fast`)
+          throw Object.assign(new Error('Google AI servers are overloaded. Please wait 2-3 minutes and try again.'), {
+            status: 503,
+            isOverloaded: true,
+          })
+        }
+
+        // Other errors (400, 401, etc.) — don't retry
+        throw retryErr
       }
     }
 
@@ -536,15 +542,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result)
 
   } catch (error: unknown) {
-    const err = error as { status?: number; message?: string; code?: string; isTimeout?: boolean }
+    const err = error as { status?: number; message?: string; code?: string; isTimeout?: boolean; isOverloaded?: boolean }
     const msg = err?.message ?? ''
     console.error('[scan-document] Error:', msg || error)
 
     // ── Timeout (our own Promise.race rejection) ─────────────────────────────
     if (err?.isTimeout) {
       return NextResponse.json(
-        { error: 'Scan timed out — the AI took too long. Please try again.' },
-        { status: 503 }
+        { error: 'Scan timed out — the AI took too long. Please try again with a smaller image.', retryable: true },
+        { status: 504 }
       )
     }
 
@@ -557,12 +563,12 @@ export async function POST(req: NextRequest) {
     ) {
       console.error('[scan-document] CRITICAL: GEMINI_API_KEY is invalid or missing. Check Vercel env vars.')
       return NextResponse.json(
-        { error: 'Scanner service is misconfigured. Please contact support.' },
+        { error: 'Scanner service is misconfigured. Please contact support.', retryable: false },
         { status: 500 }
       )
     }
 
-    // ── Gemini rate limit / quota errors → 429 ──────────────────────────────
+    // ── Rate limit / quota exhausted → 429 (all keys tried) ─────────────────
     if (
       err?.status === 429 ||
       msg.includes('429') ||
@@ -570,13 +576,14 @@ export async function POST(req: NextRequest) {
       msg.includes('RESOURCE_EXHAUSTED')
     ) {
       return NextResponse.json(
-        { error: 'You have reached the API rate limit or quota. Please wait a moment and try again.' },
+        { error: 'All API keys are busy. Please wait 1 minute and try again.', retryable: false },
         { status: 429 }
       )
     }
 
-    // ── Gemini transient overload / deadline errors → 503 (safe to retry) ───
+    // ── Google servers overloaded → 503 (NOT retryable — different key won't help) ─
     if (
+      err?.isOverloaded ||
       err?.status === 503 ||
       msg.includes('503') ||
       msg.includes('UNAVAILABLE') ||
@@ -584,7 +591,7 @@ export async function POST(req: NextRequest) {
       msg.includes('overloaded')
     ) {
       return NextResponse.json(
-        { error: 'The AI service is temporarily busy. Please try again in a moment.' },
+        { error: 'Google AI servers are overloaded. Please wait 2-3 minutes and try again.', retryable: false },
         { status: 503 }
       )
     }
