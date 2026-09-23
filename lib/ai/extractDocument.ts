@@ -1,9 +1,9 @@
 // ─── AI Provider Config ──────────────────────────────────────────────────────
 // SINGLE point of change when swapping models.
-// Migrated from deprecated @google/generative-ai → @google/genai (Aug 2026).
-// gemini-2.5-flash-lite was retired early by Google; upgraded to gemini-3.1-flash-lite.
-// Confirmed working (Sept 2026) with this API key via diagnostic test.
+// Primary: gemini-3.1-flash-lite (cheapest, fastest when available)
+// Fallback: gemini-3.6-flash (different server pool, tested working + fastest fallback)
 export const AI_MODEL = 'gemini-3.1-flash-lite'
+export const FALLBACK_MODEL = 'gemini-3.6-flash'
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
 // Exported so route.ts, DocumentScannerUpload, and consumer pages all share one

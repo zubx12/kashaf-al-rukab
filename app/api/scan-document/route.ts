@@ -10,6 +10,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient as createUntypedClient } from '@supabase/supabase-js'
 import {
   AI_MODEL,
+  FALLBACK_MODEL,
   SYSTEM_PROMPT,
   GENERATION_CONFIG,
   type ExtractedPassenger,
@@ -335,105 +336,105 @@ export async function POST(req: NextRequest) {
         if (error) console.error('[scan-document] Storage upload error:', error.message)
       })
 
-    // ── Call Gemini via smart key rotation ─────────────────────────────────────
-    // ONLY 429 (rate limit) errors benefit from trying a different key.
-    // 503 (overloaded) means Google's servers are down — all keys hit the same
-    // servers, so retrying with another key wastes time. Fail fast instead.
+    // ── Call Gemini via smart key rotation + model fallback ─────────────────────
+    // 429 (rate limit) → try different key
+    // 503 (overloaded) → try FALLBACK model (different server pool)
     const WALL_CLOCK_BUDGET_MS = 50_000
     const MAX_PER_ATTEMPT_MS   = 15_000
     const MAX_AI_RETRIES = Math.max(API_KEYS.length, 3)
+    const MODELS_TO_TRY = [AI_MODEL, FALLBACK_MODEL]  // primary → fallback
     const wallClockStart = Date.now()
 
     let aiResult: Awaited<ReturnType<InstanceType<typeof GoogleGenAI>['models']['generateContent']>> | null = null
     let lastAiError: unknown = null
-    const usedKeys = new Set<string>()
 
-    for (let attempt = 0; attempt <= MAX_AI_RETRIES; attempt++) {
-      const elapsed = Date.now() - wallClockStart
-      const remaining = WALL_CLOCK_BUDGET_MS - elapsed
-      if (remaining < 3_000) break
+    for (const currentModel of MODELS_TO_TRY) {
+      if (aiResult) break  // already got a result
 
-      const apiKey = pickBestKey() ?? pickAnyKey()
+      const usedKeys = new Set<string>()
 
-      if (attempt > 0) {
-        const backoff = Math.min(500 * attempt, 2_000)
-        await new Promise(r => setTimeout(r, backoff))
-      }
+      for (let attempt = 0; attempt <= MAX_AI_RETRIES; attempt++) {
+        const elapsed = Date.now() - wallClockStart
+        const remaining = WALL_CLOCK_BUDGET_MS - elapsed
+        if (remaining < 3_000) break
 
-      recordKeyUsage(apiKey)
-      const ai = new GoogleGenAI({ apiKey })
+        const apiKey = pickBestKey() ?? pickAnyKey()
 
-      const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(Object.assign(new Error('AI_TIMEOUT'), { isTimeout: true })),
-          attemptTimeout,
+        if (attempt > 0) {
+          const backoff = Math.min(500 * attempt, 2_000)
+          await new Promise(r => setTimeout(r, backoff))
+        }
+
+        recordKeyUsage(apiKey)
+        const ai = new GoogleGenAI({ apiKey })
+
+        const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(Object.assign(new Error('AI_TIMEOUT'), { isTimeout: true })),
+            attemptTimeout,
+          )
         )
-      )
 
-      try {
-        aiResult = await Promise.race([
-          ai.models.generateContent({
-            model: AI_MODEL,
-            config: {
-              systemInstruction: SYSTEM_PROMPT,
-              ...GENERATION_CONFIG,
-            },
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { inlineData: { mimeType, data: base64Image } },
-                  { text: 'Extract.' },
-                ],
+        try {
+          aiResult = await Promise.race([
+            ai.models.generateContent({
+              model: currentModel,
+              config: {
+                systemInstruction: SYSTEM_PROMPT,
+                ...GENERATION_CONFIG,
               },
-            ],
-          }),
-          timeoutPromise,
-        ])
-        log(`AI_SUCCESS attempt=${attempt} key=...${apiKey.slice(-6)}`)
-        break
-      } catch (retryErr: unknown) {
-        lastAiError = retryErr
-        usedKeys.add(apiKey)
-        const re = retryErr as { status?: number; message?: string; isTimeout?: boolean }
-        const retryMsg = re?.message ?? ''
+              contents: [
+                {
+                  role: 'user',
+                  parts: [
+                    { inlineData: { mimeType, data: base64Image } },
+                    { text: 'Extract.' },
+                  ],
+                },
+              ],
+            }),
+            timeoutPromise,
+          ])
+          log(`AI_SUCCESS model=${currentModel} attempt=${attempt} key=...${apiKey.slice(-6)}`)
+          break  // success
+        } catch (retryErr: unknown) {
+          lastAiError = retryErr
+          usedKeys.add(apiKey)
+          const re = retryErr as { status?: number; message?: string; isTimeout?: boolean }
+          const retryMsg = re?.message ?? ''
 
-        // Classify the error
-        const is429 =
-          re?.status === 429 ||
-          retryMsg.includes('429') ||
-          retryMsg.includes('RESOURCE_EXHAUSTED')
-        const is503 =
-          re?.status === 503 ||
-          retryMsg.includes('503') ||
-          retryMsg.includes('UNAVAILABLE') ||
-          retryMsg.includes('overloaded')
+          const is429 =
+            re?.status === 429 ||
+            retryMsg.includes('429') ||
+            retryMsg.includes('RESOURCE_EXHAUSTED')
+          const is503 =
+            re?.status === 503 ||
+            retryMsg.includes('503') ||
+            retryMsg.includes('UNAVAILABLE') ||
+            retryMsg.includes('overloaded')
 
-        if (is429) {
-          // Rate limit — mark this key and try the next one
-          markKeyRateLimited(apiKey)
-          log(`AI_RETRY_429 attempt=${attempt} key=...${apiKey.slice(-6)}`)
-          continue  // try next key
+          if (is429) {
+            markKeyRateLimited(apiKey)
+            log(`AI_RETRY_429 model=${currentModel} attempt=${attempt} key=...${apiKey.slice(-6)}`)
+            continue  // try next key
+          }
+
+          if (is503) {
+            // Model overloaded — break inner loop, try fallback model
+            log(`AI_503 model=${currentModel} — switching to fallback`)
+            break
+          }
+
+          // Other errors (400, 401, etc.) — don't retry
+          throw retryErr
         }
-
-        if (is503) {
-          // Google servers overloaded — retrying with another key won't help
-          log(`AI_FAIL_503 attempt=${attempt} key=...${apiKey.slice(-6)} — failing fast`)
-          throw Object.assign(new Error('Google AI servers are overloaded. Please wait 2-3 minutes and try again.'), {
-            status: 503,
-            isOverloaded: true,
-          })
-        }
-
-        // Other errors (400, 401, etc.) — don't retry
-        throw retryErr
       }
     }
 
     if (!aiResult) {
-      // All retries exhausted without success
-      throw lastAiError ?? new Error('All API keys exhausted')
+      // All models + keys exhausted
+      throw lastAiError ?? new Error('All API keys and models exhausted')
     }
 
     // ── Parse response ────────────────────────────────────────────────────────
