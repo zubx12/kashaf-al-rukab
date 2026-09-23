@@ -258,13 +258,10 @@ function setL2(hash: string, result: ScanResult): void {
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
-/** Check that a passenger has at minimum a name and one identifying field. */
+/** Check that a passenger has at minimum a name. ID fields are optional —
+ *  some documents (e.g. simple passenger lists) only contain names. */
 function isValidPassenger(p: ExtractedPassenger): boolean {
-  const hasName = typeof p.full_name === 'string' && p.full_name.trim().length > 0
-  const hasId =
-    (typeof p.passport_number === 'string' && p.passport_number.trim().length > 0) ||
-    (typeof p.visa_number === 'string' && p.visa_number.trim().length > 0)
-  return hasName && hasId
+  return typeof p.full_name === 'string' && p.full_name.trim().length > 0
 }
 
 /** Normalise a raw AI passenger object — ensure all fields exist and are string|null. */
