@@ -44,6 +44,31 @@ const API_KEYS = (() => {
 })()
 console.log(`[scan-document] Loaded ${API_KEYS.length} API key(s)`)
 
+// ─── Reusable SDK clients ─────────────────────────────────────────────────────
+// One GoogleGenAI instance per API key, created ONCE at module load.
+// Eliminates ~1-2s TLS/connection overhead that was wasted on every retry.
+// httpOptions.timeout = 30s ensures the SDK itself aborts slow connections
+// (previously we only used Promise.race which leaked underlying connections).
+const aiClients = new Map<string, InstanceType<typeof GoogleGenAI>>()
+for (const key of API_KEYS) {
+  aiClients.set(key, new GoogleGenAI({
+    apiKey: key,
+    httpOptions: { timeout: 30_000 },
+  }))
+}
+
+function getAiClient(apiKey: string): InstanceType<typeof GoogleGenAI> {
+  let client = aiClients.get(apiKey)
+  if (!client) {
+    client = new GoogleGenAI({
+      apiKey,
+      httpOptions: { timeout: 30_000 },
+    })
+    aiClients.set(apiKey, client)
+  }
+  return client
+}
+
 // ─── Smart key selector ──────────────────────────────────────────────────────
 // Prevents key conflicts with 3 strategies:
 //   1. LRU selection: always picks the key used LEAST recently
@@ -339,8 +364,8 @@ export async function POST(req: NextRequest) {
     // ── Call Gemini via smart key rotation + model fallback ─────────────────────
     // 429 (rate limit) → try different key
     // 503 (overloaded) → try FALLBACK model (different server pool)
-    const WALL_CLOCK_BUDGET_MS = 50_000
-    const MAX_PER_ATTEMPT_MS   = 15_000
+    const WALL_CLOCK_BUDGET_MS = 55_000
+    const MAX_PER_ATTEMPT_MS   = 25_000
     const MAX_AI_RETRIES = Math.max(API_KEYS.length, 3)
     const MODELS_TO_TRY = [AI_MODEL, FALLBACK_MODEL]  // primary → fallback
     const wallClockStart = Date.now()
@@ -366,7 +391,7 @@ export async function POST(req: NextRequest) {
         }
 
         recordKeyUsage(apiKey)
-        const ai = new GoogleGenAI({ apiKey })
+        const ai = getAiClient(apiKey)
 
         const attemptTimeout = Math.min(MAX_PER_ATTEMPT_MS, remaining - 2_000)
         const timeoutPromise = new Promise<never>((_, reject) =>

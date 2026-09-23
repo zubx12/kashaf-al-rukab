@@ -1,9 +1,9 @@
 // ─── AI Provider Config ──────────────────────────────────────────────────────
 // SINGLE point of change when swapping models.
 // Primary: gemini-3.1-flash-lite (cheapest, fastest when available)
-// Fallback: gemini-3.6-flash (different server pool, tested working + fastest fallback)
+// Fallback: gemini-3.5-flash-lite (different server pool, Google-recommended stable fast model)
 export const AI_MODEL = 'gemini-3.1-flash-lite'
-export const FALLBACK_MODEL = 'gemini-3.6-flash'
+export const FALLBACK_MODEL = 'gemini-3.5-flash-lite'
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
 // Exported so route.ts, DocumentScannerUpload, and consumer pages all share one
