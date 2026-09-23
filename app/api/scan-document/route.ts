@@ -285,24 +285,22 @@ export async function POST(req: NextRequest) {
   const log = (step: string) => console.log(`[scan-document] ${step} — ${Date.now() - t0}ms`)
 
   try {
-    // ── Auth guard ──────────────────────────────────────────────────────────
+    // ── Auth + file parse in parallel (saves ~200-400ms) ───────────────────
     const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const [{ data: { user } }, formData] = await Promise.all([
+      supabase.auth.getUser(),
+      req.formData(),
+    ])
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-    log('AUTH')
-
-    // ── Parse file ──────────────────────────────────────────────────────────
-    const formData = await req.formData()
     const file = formData.get('file') as File | null
-
     if (!file) {
       return NextResponse.json({ error: 'No file uploaded' }, { status: 400 })
     }
+    log('AUTH+PARSE')
 
     // ── Server-side size guard (5 MB) ───────────────────────────────────────
-    // Client already resizes to ≤1536px, but this guards against direct API calls.
     if (file.size > MAX_BYTES) {
       return NextResponse.json(
         { error: 'Image too large. Maximum size is 5 MB — please resize before uploading.' },
@@ -322,7 +320,7 @@ export async function POST(req: NextRequest) {
 
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
-    log('FILE_PARSED')
+    log('FILE_READY')
 
     // ── Two-layer cache lookup: L1 (in-memory) → L2 (Supabase) ──────────────
     const imageHash = createHash('sha256').update(buffer).digest('hex')
