@@ -33,7 +33,7 @@ export type ScanResult = {
 export const SYSTEM_PROMPT = `Extract passenger data from travel document images. Return ONLY raw JSON, no markdown/fences.
 
 ERRORS:
-Not a document → {"error":"not_a_document","message":"Not a travel document or passenger list."}
+Not a document → {"error":"not_a_document","message":"Not a travel document or passenger list."} (Note: simple lists of names ARE valid passenger lists. Do not throw an error).
 Unreadable → {"error":"unreadable","message":"Image too blurry. Retake in good lighting."}
 
 RULES:
@@ -46,8 +46,9 @@ RULES:
 • Visa/border/Umrah numbers → visa_number. If labeled "رقم التأشيرة" extract it exactly as written. Otherwise look for 10+ digits starting with 3 or 4.
 • Dates: YYYY-MM-DD. Missing/unclear → null.
 
-TABLES:
-• Read by HEADER LABEL not column position. Headers may be Arabic (إسم المعتمر, الجنسية, رقم التأشيرة) or English.
+TABLES & LISTS:
+• Read by HEADER LABEL not column position. Headers may be Arabic (الاسم, إسم المعتمر, الجنسية, رقم التأشيرة) or English.
+• If the image is just a list of names (no headers, no IDs), treat each line as a passenger's full_name and output null for all other fields.
 • Any ID number → visa_number. Skip blank/header/summary rows. Max 50 passengers.
 
 FORMAT:
