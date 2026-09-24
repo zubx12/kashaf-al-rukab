@@ -31,14 +31,23 @@ const MAX_BYTES = 5 * 1024 * 1024 // 5 MB server-side size guard
 // Round-robin distributes load evenly across all available keys.
 const API_KEYS = (() => {
   const keys: string[] = []
-  // Format 1: comma-separated
-  const csv = (process.env.GEMINI_API_KEY ?? '').split(',').map(k => k.trim().replace(/^"|"$/g, '')).filter(Boolean)
-  keys.push(...csv)
+  
+  // Helper to parse comma-separated keys
+  const parseKeys = (value: string | undefined) => {
+    return (value ?? '')
+      .split(',')
+      .map(k => k.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean)
+  }
+
+  // Format 1: main GEMINI_API_KEY
+  keys.push(...parseKeys(process.env.GEMINI_API_KEY))
+  
   // Format 2: numbered GEMINI_API_KEY1 .. GEMINI_API_KEY20
   for (let i = 1; i <= 20; i++) {
-    const k = (process.env[`GEMINI_API_KEY${i}`] ?? '').trim()
-    if (k) keys.push(k)
+    keys.push(...parseKeys(process.env[`GEMINI_API_KEY${i}`]))
   }
+  
   // Deduplicate
   return [...new Set(keys)]
 })()
@@ -53,7 +62,7 @@ const aiClients = new Map<string, InstanceType<typeof GoogleGenAI>>()
 for (const key of API_KEYS) {
   aiClients.set(key, new GoogleGenAI({
     apiKey: key,
-    httpOptions: { timeout: 30_000 },
+    httpOptions: { timeout: 30_000, retryOptions: { attempts: 1 } },
   }))
 }
 
@@ -62,7 +71,7 @@ function getAiClient(apiKey: string): InstanceType<typeof GoogleGenAI> {
   if (!client) {
     client = new GoogleGenAI({
       apiKey,
-      httpOptions: { timeout: 30_000 },
+      httpOptions: { timeout: 30_000, retryOptions: { attempts: 1 } },
     })
     aiClients.set(apiKey, client)
   }
@@ -444,6 +453,15 @@ export async function POST(req: NextRequest) {
             // Model overloaded — break inner loop, try fallback model
             log(`AI_503 model=${currentModel} — switching to fallback`)
             break
+          }
+
+          if (re?.isTimeout) {
+            // The Google SDK often retries 429s internally and hangs until our timeout cuts it off.
+            // If it times out, we should mark the key as potentially rate-limited and try the next key
+            // instead of aborting the entire request.
+            markKeyRateLimited(apiKey)
+            log(`AI_TIMEOUT model=${currentModel} attempt=${attempt} key=...${apiKey.slice(-6)} — rotating key`)
+            continue
           }
 
           // Other errors (400, 401, etc.) — don't retry
