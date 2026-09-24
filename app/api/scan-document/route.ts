@@ -389,7 +389,9 @@ export async function POST(req: NextRequest) {
 
         const apiKey = pickBestKey() ?? pickAnyKey()
 
-        if (attempt > 0) {
+        const isForcedRetry = Date.now() < getKeyState(apiKey).cooldownUntil
+
+        if (attempt > 0 && isForcedRetry) {
           const backoff = Math.min(500 * attempt, 2_000)
           await new Promise(r => setTimeout(r, backoff))
         }
