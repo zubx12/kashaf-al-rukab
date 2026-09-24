@@ -43,7 +43,7 @@ RULES:
 • Name: "Given Surname" in English.
 • Nationality: full name (PAK→Pakistan, IND→India, SAU→Saudi Arabia, BGD→Bangladesh, EGY→Egypt, IDN→Indonesia).
 • Iqama: 10 digits starting with 2.
-• Visa/border/Umrah numbers (10+ digits, starts 3/4) → visa_number.
+• Visa/border/Umrah numbers → visa_number. If labeled "رقم التأشيرة" extract it exactly as written. Otherwise look for 10+ digits starting with 3 or 4.
 • Dates: YYYY-MM-DD. Missing/unclear → null.
 
 TABLES:
